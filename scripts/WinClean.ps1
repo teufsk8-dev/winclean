@@ -18,14 +18,37 @@
     Ouvre directement un module : Nettoyage, Analyse, Demarrage, Desinstallation.
     Sans ce parametre, le menu principal s'affiche.
 
+.PARAMETER Auto
+    Mode sans surveillance : nettoie les cibles de niveau 'Sur' sans rien
+    demander, journalise, et sort. Destine a la tache planifiee.
+    Ne touche jamais les cibles 'Prudent' (corbeille, Prefetch, logs, NuGet).
+
+.PARAMETER InstallTask
+    Installe la tache planifiee quotidienne (20h par defaut) qui lance -Auto.
+
+.PARAMETER RemoveTask
+    Desinstalle la tache planifiee.
+
+.PARAMETER At
+    Heure de la tache, format HH:mm. Defaut 20:00. A utiliser avec -InstallTask.
+
 .EXAMPLE
     .\WinClean.ps1
     .\WinClean.ps1 -Module Nettoyage
+    .\WinClean.ps1 -InstallTask -At 20:00
+    .\WinClean.ps1 -Auto
 #>
 [CmdletBinding()]
 param(
     [ValidateSet('Nettoyage', 'Analyse', 'Demarrage', 'Desinstallation')]
-    [string]$Module
+    [string]$Module,
+
+    [switch]$Auto,
+    [switch]$InstallTask,
+    [switch]$RemoveTask,
+
+    [ValidatePattern('^([01]\d|2[0-3]):[0-5]\d$')]
+    [string]$At = '20:00'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -127,7 +150,12 @@ function Get-CleanupTargets {
         Nom = 'Fichiers temporaires (utilisateur)'
         Niveau = 'Sur'; Admin = $false
         Paths = @('%LOCALAPPDATA%\Temp')
-        Note  = 'Regenere automatiquement.'
+        # %TEMP%\claude est le bac a sable de Claude Code. Malgre son emplacement,
+        # il accumule des medias de production (rendus video, images generees) qui
+        # n'existent souvent nulle part ailleurs. Le vider sans regarder detruit du
+        # travail. Exclu par defaut ; retirer cette ligne pour le reintegrer.
+        Exclude = @('claude')
+        Note  = 'Regenere automatiquement. Exclut %TEMP%\claude (bac a sable Claude Code).'
     }
     $t += [pscustomobject]@{
         Nom = 'Fichiers temporaires (Windows)'
@@ -265,6 +293,7 @@ function Invoke-CleanupScan {
 
         if ($t.Admin -and -not $isAdmin) { continue }
 
+        $exclude = $(if ($t.PSObject.Properties.Name -contains 'Exclude') { $t.Exclude } else { $null })
         $size = 0
         $realPaths = @()
         if ($t.PSObject.Properties.Name -contains 'Special' -and $t.Special -eq 'RecycleBin') {
@@ -276,6 +305,11 @@ function Invoke-CleanupScan {
                     foreach ($f in $t.Filter) {
                         Get-ChildItem -LiteralPath $p -Filter $f -Force -File -ErrorAction SilentlyContinue |
                             ForEach-Object { $size += $_.Length }
+                    }
+                } elseif ($exclude) {
+                    foreach ($child in (Get-TargetChildren -Path $p -Exclude $exclude)) {
+                        if ($child.PSIsContainer) { $size += Get-PathSize -Path $child.FullName }
+                        else { $size += $child.Length }
                     }
                 } else {
                     $size += Get-PathSize -Path $p
@@ -291,6 +325,7 @@ function Invoke-CleanupScan {
             Chemins   = $realPaths
             Filter    = $(if ($t.PSObject.Properties.Name -contains 'Filter') { $t.Filter } else { $null })
             Special   = $(if ($t.PSObject.Properties.Name -contains 'Special') { $t.Special } else { $null })
+            Exclude   = $exclude
             Note      = $t.Note
         })
     }
@@ -298,16 +333,35 @@ function Invoke-CleanupScan {
     return $results | Sort-Object Octets -Descending
 }
 
+function Get-TargetChildren {
+    <# Enfants d'un chemin cible, exclusions retirees. Un seul endroit decide de
+       ce qui est dans le perimetre : la mesure et la suppression doivent voir
+       exactement le meme ensemble. #>
+    param([string]$Path, [string[]]$Exclude)
+    $items = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue)
+    if ($Exclude) {
+        $items = @($items | Where-Object { $Exclude -notcontains $_.Name })
+    }
+    return $items
+}
+
 function Measure-TargetSize {
     <# Mesure une cible. Doit mesurer exactement le meme ensemble que le scan,
        sinon le gain annonce apres nettoyage est faux. #>
     param([object]$Target)
+    $exclude = $null
+    if ($Target.PSObject.Properties.Name -contains 'Exclude') { $exclude = $Target.Exclude }
     $sum = 0
     foreach ($p in $Target.Chemins) {
         if ($Target.Filter) {
             foreach ($f in $Target.Filter) {
                 Get-ChildItem -LiteralPath $p -Filter $f -Force -File -ErrorAction SilentlyContinue |
                     ForEach-Object { $sum += $_.Length }
+            }
+        } elseif ($exclude) {
+            foreach ($child in (Get-TargetChildren -Path $p -Exclude $exclude)) {
+                if ($child.PSIsContainer) { $sum += Get-PathSize -Path $child.FullName }
+                else { $sum += $child.Length }
             }
         } else {
             $sum += Get-PathSize -Path $p
@@ -333,6 +387,9 @@ function Remove-CleanupTarget {
         }
     }
 
+    $exclude = $null
+    if ($Target.PSObject.Properties.Name -contains 'Exclude') { $exclude = $Target.Exclude }
+
     foreach ($p in $Target.Chemins) {
         try {
             if ($Target.Filter) {
@@ -343,7 +400,7 @@ function Remove-CleanupTarget {
             } else {
                 # On vide le contenu, on ne supprime pas le dossier lui-meme :
                 # certains services rouspetent si leur dossier disparait.
-                Get-ChildItem -LiteralPath $p -Force -ErrorAction SilentlyContinue |
+                Get-TargetChildren -Path $p -Exclude $exclude |
                     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
             }
         } catch { }
@@ -988,6 +1045,107 @@ function Invoke-UninstallModule {
 
 
 # ---------------------------------------------------------------------------
+# Mode automatique et tache planifiee
+# ---------------------------------------------------------------------------
+
+$script:TaskName = 'WinClean - nettoyage quotidien'
+
+function Invoke-CleanupAuto {
+    <# Sans surveillance : ne nettoie QUE les cibles 'Sur'. Ne demande rien.
+       Les cibles 'Prudent' (corbeille, Prefetch, logs, NuGet) sont exclues par
+       construction : personne n'est la pour juger si leur suppression est bonne. #>
+
+    Write-Log '--- Debut du nettoyage automatique ---'
+    $scan = Invoke-CleanupScan
+    $safe = @($scan | Where-Object { $_.Niveau -eq 'Sur' -and $_.Octets -gt 0 })
+
+    if ($safe.Count -eq 0) {
+        Write-Log 'Rien a nettoyer.'
+        Write-Host '  Rien a nettoyer.'
+        return
+    }
+
+    $prevu = ($safe | Measure-Object Octets -Sum).Sum
+    Write-Log ("{0} cibles, {1} annonces" -f $safe.Count, (Format-Size $prevu))
+
+    $freed = 0
+    $locked = 0
+    foreach ($t in $safe) {
+        $r = Remove-CleanupTarget -Target $t
+        $freed += $r.Liberes
+        $locked += $r.Restants
+        if ($r.Erreur) {
+            Write-Log ("  '{0}' : echec - {1}" -f $r.Nom, $r.Erreur)
+        } else {
+            Write-Log ("  '{0}' : {1} liberes, {2} restants" -f $r.Nom, (Format-Size $r.Liberes), (Format-Size $r.Restants))
+        }
+        Write-Host ("  {0} : {1} liberes" -f $r.Nom, (Format-Size $r.Liberes))
+    }
+
+    Write-Log ("--- Fin : {0} liberes, {1} verrouilles ---" -f (Format-Size $freed), (Format-Size $locked))
+    Write-Host ("  Total : {0} liberes" -f (Format-Size $freed))
+    if ($locked -gt 0) {
+        Write-Host ("  {0} verrouilles (applications ouvertes)" -f (Format-Size $locked))
+    }
+}
+
+function Install-WinCleanTask {
+    param([string]$Heure = '20:00')
+
+    $self = Join-Path $script:Root 'WinClean.ps1'
+    if (-not (Test-Path -LiteralPath $self)) {
+        Write-Host "  Script introuvable : $self" -ForegroundColor Red
+        return
+    }
+
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
+        -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -Auto' -f $self)
+
+    $trigger = New-ScheduledTaskTrigger -Daily -At $Heure
+
+    # StartWhenAvailable : si le PC etait eteint a l'heure dite, la tache se
+    # rattrape au prochain demarrage plutot que de sauter le tour.
+    $settings = New-ScheduledTaskSettingsSet `
+        -StartWhenAvailable `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Hours 1) `
+        -MultipleInstances IgnoreNew
+
+    # RunLevel Limited : droits standard, pas d'elevation. La tache doit tourner
+    # sous l'identite de l'utilisateur pour voir son profil (AppData).
+    $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) `
+        -LogonType Interactive -RunLevel Limited
+
+    try {
+        Register-ScheduledTask -TaskName $script:TaskName -Action $action -Trigger $trigger `
+            -Settings $settings -Principal $principal `
+            -Description 'Nettoie chaque soir les caches et temporaires classes Sur par WinClean. Ne touche jamais la corbeille ni les cibles Prudent.' `
+            -Force -ErrorAction Stop | Out-Null
+
+        Write-Host ("  Tache installee : '{0}', tous les jours a {1}." -f $script:TaskName, $Heure) -ForegroundColor Green
+        Write-Host "  Elle ne nettoie que les cibles 'Sur'. Jamais la corbeille." -ForegroundColor DarkGray
+        Write-Host ("  Journal : {0}" -f $script:LogDir) -ForegroundColor DarkGray
+        Write-Host "  Pour la retirer : .\scripts\WinClean.ps1 -RemoveTask" -ForegroundColor DarkGray
+        Write-Log ("Tache planifiee installee a {0}" -f $Heure)
+    } catch {
+        Write-Host ("  Echec de l'installation : {0}" -f $_.Exception.Message) -ForegroundColor Red
+    }
+}
+
+function Uninstall-WinCleanTask {
+    try {
+        $t = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop
+        Unregister-ScheduledTask -TaskName $script:TaskName -Confirm:$false -ErrorAction Stop
+        Write-Host ("  Tache '{0}' retiree." -f $script:TaskName) -ForegroundColor Green
+        Write-Log 'Tache planifiee retiree'
+    } catch {
+        Write-Host "  Aucune tache WinClean installee." -ForegroundColor Yellow
+    }
+}
+
+
+# ---------------------------------------------------------------------------
 # Menu
 # ---------------------------------------------------------------------------
 
@@ -1029,7 +1187,16 @@ function Start-WinClean {
 
 # Sourcer le fichier ('. .\WinClean.ps1') charge les fonctions sans rien lancer.
 if ($MyInvocation.InvocationName -ne '.') {
-    if ($Module) {
+    if ($Auto) {
+        # Pas de banniere ni de couleurs : personne ne regarde, tout va au journal.
+        Invoke-CleanupAuto
+    } elseif ($InstallTask) {
+        Show-Banner
+        Install-WinCleanTask -Heure $At
+    } elseif ($RemoveTask) {
+        Show-Banner
+        Uninstall-WinCleanTask
+    } elseif ($Module) {
         Show-Banner
         switch ($Module) {
             'Nettoyage'      { Invoke-CleanupModule }

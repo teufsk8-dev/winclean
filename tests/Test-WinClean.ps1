@@ -112,7 +112,29 @@ try {
     $fs.Close(); $fs.Dispose()
 }
 
-Write-Host "`n=== TEST 5 : etat demarrage, aller-retour ===" -ForegroundColor Cyan
+Write-Host "`n=== TEST 5 : exclusion (le bac a sable Claude survit) ===" -ForegroundColor Cyan
+$t5 = Join-Path $sandbox 'temp'
+New-Item -ItemType Directory -Path "$t5\claude\session-xyz" -Force | Out-Null
+New-Item -ItemType Directory -Path "$t5\jetable" -Force | Out-Null
+Set-Content "$t5\claude\session-xyz\rendu-video.mp4" ('x' * 400000) -NoNewline   # ne doit JAMAIS partir
+Set-Content "$t5\jetable\ordure.tmp" ('x' * 200000) -NoNewline
+Set-Content "$t5\racine.tmp"         ('x' * 100000) -NoNewline
+
+$cible5 = [pscustomobject]@{
+    Nom = 'Test exclusion'; Chemins = @($t5); Filter = $null; Special = $null
+    Exclude = @('claude'); Octets = 0
+}
+$cible5.Octets = Measure-TargetSize -Target $cible5
+Assert-That 'la mesure ignore l exclusion'   ($cible5.Octets -eq 300000) "attendu 300000, obtenu $($cible5.Octets)"
+$r5 = Remove-CleanupTarget -Target $cible5
+Assert-That 'le rendu video survit'          (Test-Path -LiteralPath "$t5\claude\session-xyz\rendu-video.mp4")
+Assert-That 'le dossier exclu survit entier' ((Get-ChildItem "$t5\claude" -Recurse -Force -File).Count -eq 1)
+Assert-That 'le jetable est bien efface'     (-not (Test-Path -LiteralPath "$t5\jetable"))
+Assert-That 'le fichier racine est efface'   (-not (Test-Path -LiteralPath "$t5\racine.tmp"))
+Assert-That 'liberes = hors exclusion'       ($r5.Liberes -eq 300000) "obtenu $($r5.Liberes)"
+Assert-That 'rien annonce comme verrouille'  ($r5.Restants -eq 0) "obtenu $($r5.Restants)"
+
+Write-Host "`n=== TEST 6 : etat demarrage, aller-retour ===" -ForegroundColor Cyan
 $fakeKey  = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
 $fakeName = 'ZZ_WinCleanTest_ASupprimer'
 try {

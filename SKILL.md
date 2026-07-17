@@ -66,6 +66,20 @@ Ne les appelle **jamais** sans que l'utilisateur ait vu les chiffres du scan et 
 
 ## Les quatre modules
 
+## Automatisation (tâche planifiée)
+
+```powershell
+.\scripts\WinClean.ps1 -InstallTask -At 20:00   # installe la tâche quotidienne
+.\scripts\WinClean.ps1 -RemoveTask              # la retire
+.\scripts\WinClean.ps1 -Auto                    # ce que la tâche lance : nettoie les cibles 'Sur', sans rien demander
+```
+
+Le mode `-Auto` ne touche **que** les cibles de niveau `Sur`, jamais les `Prudent` (corbeille comprise). Il tourne en droits standard, sous le compte utilisateur, et journalise tout dans `logs/`.
+
+**Exclusion `%TEMP%\claude`.** Le bac à sable de Claude Code est sous `%TEMP%`, mais il accumule des médias de production (rendus vidéo, images générées) qui n'existent souvent nulle part ailleurs — les vider à l'aveugle détruit du travail. La cible « Fichiers temporaires (utilisateur) » porte donc `Exclude = @('claude')`, respecté par le scan, la mesure et la suppression. Ne pas retirer cette exclusion sans une raison explicite de l'utilisateur.
+
+**Tension à garder en tête.** L'automatisation contredit l'invariant « rien sans confirmation ». C'est un choix assumé de l'utilisateur pour les seules cibles `Sur`. Ne jamais l'étendre aux cibles `Prudent` ni élargir le périmètre sans le lui demander.
+
 ### 1. Nettoyage disque
 
 Scanne ~16 cibles, les classe par taille, affiche un total et le détail. Deux niveaux :

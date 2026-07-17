@@ -64,6 +64,19 @@ Recuperable au total : 5,03 Go   dont 4,13 Go en cibles 'Sur'
 s = toutes les cibles 'Sur'    t = tout    1,3,5 = selection    q = annuler
 ```
 
+## Automatisation
+
+Pour un nettoyage chaque soir, sans surveillance :
+
+```powershell
+.\scripts\WinClean.ps1 -InstallTask -At 20:00   # tâche quotidienne à 20h
+.\scripts\WinClean.ps1 -RemoveTask              # pour la retirer
+```
+
+La tâche ne nettoie **que les cibles Sûres** — jamais la corbeille, jamais les cibles Prudentes. Droits standard, journalisée dans `logs/`. Si le PC est éteint à l'heure dite, elle se rattrape au démarrage suivant.
+
+Une exclusion est câblée par défaut : **`%TEMP%\claude`**, le bac à sable de Claude Code. Bien qu'il soit dans les fichiers temporaires, il peut contenir des rendus ou médias sans copie ailleurs — l'automatisation n'y touche jamais.
+
 ## Sûr / Prudent
 
 Chaque cible porte un niveau, et le raccourci `s` ne nettoie que les cibles **Sûr**.

@@ -19,7 +19,7 @@ Utilisable **à la main** dans un terminal, ou **comme skill** pour Claude Code.
 ## Installation
 
 ```powershell
-git clone https://github.com/<vous>/winclean.git
+git clone https://github.com/teufsk8-dev/winclean.git
 cd winclean
 .\scripts\WinClean.ps1
 ```
@@ -37,7 +37,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 Clonez dans votre dossier de skills, puis demandez simplement « nettoie mon PC » ou « qu'est-ce qui se lance au démarrage ? » :
 
 ```powershell
-git clone https://github.com/<vous>/winclean.git $env:USERPROFILE\.claude\skills\winclean
+git clone https://github.com/teufsk8-dev/winclean.git $env:USERPROFILE\.claude\skills\winclean
 ```
 
 ## Utilisation

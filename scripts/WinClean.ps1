@@ -298,6 +298,63 @@ function Invoke-CleanupScan {
     return $results | Sort-Object Octets -Descending
 }
 
+function Measure-TargetSize {
+    <# Mesure une cible. Doit mesurer exactement le meme ensemble que le scan,
+       sinon le gain annonce apres nettoyage est faux. #>
+    param([object]$Target)
+    $sum = 0
+    foreach ($p in $Target.Chemins) {
+        if ($Target.Filter) {
+            foreach ($f in $Target.Filter) {
+                Get-ChildItem -LiteralPath $p -Filter $f -Force -File -ErrorAction SilentlyContinue |
+                    ForEach-Object { $sum += $_.Length }
+            }
+        } else {
+            $sum += Get-PathSize -Path $p
+        }
+    }
+    return $sum
+}
+
+function Remove-CleanupTarget {
+    <# Supprime une cible issue de Invoke-CleanupScan.
+       Retourne { Nom, Liberes, Restants, Erreur }. Ne demande rien : l'appelant
+       est responsable d'avoir obtenu la confirmation. #>
+    param([Parameter(Mandatory = $true)][object]$Target)
+
+    $before = $Target.Octets
+
+    if ($Target.Special -eq 'RecycleBin') {
+        try {
+            Clear-RecycleBin -Force -ErrorAction Stop
+            return [pscustomobject]@{ Nom = $Target.Nom; Liberes = $before; Restants = 0; Erreur = $null }
+        } catch {
+            return [pscustomobject]@{ Nom = $Target.Nom; Liberes = 0; Restants = $before; Erreur = $_.Exception.Message }
+        }
+    }
+
+    foreach ($p in $Target.Chemins) {
+        try {
+            if ($Target.Filter) {
+                foreach ($f in $Target.Filter) {
+                    Get-ChildItem -LiteralPath $p -Filter $f -Force -File -ErrorAction SilentlyContinue |
+                        Remove-Item -Force -ErrorAction SilentlyContinue
+                }
+            } else {
+                # On vide le contenu, on ne supprime pas le dossier lui-meme :
+                # certains services rouspetent si leur dossier disparait.
+                Get-ChildItem -LiteralPath $p -Force -ErrorAction SilentlyContinue |
+                    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
+    }
+
+    $after = Measure-TargetSize -Target $Target
+    $gain = $before - $after
+    if ($gain -lt 0) { $gain = 0 }
+    return [pscustomobject]@{ Nom = $Target.Nom; Liberes = $gain; Restants = $after; Erreur = $null }
+}
+
 function Invoke-CleanupModule {
     $scan = Invoke-CleanupScan
     $found = @($scan | Where-Object { $_.Octets -gt 0 })
@@ -368,49 +425,18 @@ function Invoke-CleanupModule {
     Write-Host ""
     $freed = 0
     foreach ($s in $selected) {
-        $before = $s.Octets
         Write-Host ("  Nettoyage : {0}" -f $s.Nom) -NoNewline
+        $r = Remove-CleanupTarget -Target $s
+        $freed += $r.Liberes
 
-        if ($s.Special -eq 'RecycleBin') {
-            try {
-                Clear-RecycleBin -Force -ErrorAction Stop
-                $freed += $before
-                Write-Host "   ok" -ForegroundColor Green
-                Write-Log "Corbeille videe ($(Format-Size $before))"
-            } catch {
-                Write-Host "   echec : $($_.Exception.Message)" -ForegroundColor Red
-            }
-            continue
-        }
-
-        foreach ($p in $s.Chemins) {
-            try {
-                if ($s.Filter) {
-                    foreach ($f in $s.Filter) {
-                        Get-ChildItem -LiteralPath $p -Filter $f -Force -File -ErrorAction SilentlyContinue |
-                            Remove-Item -Force -ErrorAction SilentlyContinue
-                    }
-                } else {
-                    # On vide le contenu, on ne supprime pas le dossier lui-meme :
-                    # certains services rouspetent si leur dossier disparait.
-                    Get-ChildItem -LiteralPath $p -Force -ErrorAction SilentlyContinue |
-                        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-                }
-            } catch { }
-        }
-
-        $after = 0
-        foreach ($p in $s.Chemins) { $after += Get-PathSize -Path $p }
-        $gain = $before - $after
-        if ($gain -lt 0) { $gain = 0 }
-        $freed += $gain
-
-        if ($after -gt 0) {
-            Write-Host ("   {0} liberes, {1} verrouilles (fichiers en cours d'usage)" -f (Format-Size $gain), (Format-Size $after)) -ForegroundColor Yellow
+        if ($r.Erreur) {
+            Write-Host ("   echec : {0}" -f $r.Erreur) -ForegroundColor Red
+        } elseif ($r.Restants -gt 0) {
+            Write-Host ("   {0} liberes, {1} verrouilles (fichiers en cours d'usage)" -f (Format-Size $r.Liberes), (Format-Size $r.Restants)) -ForegroundColor Yellow
         } else {
-            Write-Host ("   {0} liberes" -f (Format-Size $gain)) -ForegroundColor Green
+            Write-Host ("   {0} liberes" -f (Format-Size $r.Liberes)) -ForegroundColor Green
         }
-        Write-Log ("Nettoye '{0}' : {1} liberes, {2} restants" -f $s.Nom, (Format-Size $gain), (Format-Size $after))
+        Write-Log ("Nettoye '{0}' : {1} liberes, {2} restants" -f $r.Nom, (Format-Size $r.Liberes), (Format-Size $r.Restants))
     }
 
     Write-Host ""

@@ -83,6 +83,14 @@ Sans admin, les cibles système sont ignorées du scan (temporaires Windows, cac
 
 Toute suppression est journalisée dans `logs/winclean-AAAA-MM-JJ.log`.
 
+## Tests
+
+```powershell
+.\tests\Test-WinClean.ps1
+```
+
+24 assertions dans un bac à sable temporaire — aucune donnée réelle n'est touchée. La suite vérifie notamment que le nettoyage vide un dossier sans le supprimer, qu'une suppression filtrée épargne les fichiers hors périmètre, que les caches des profils Chrome partent **sans que `Login Data` soit touché**, qu'un fichier verrouillé est compté et non forcé, et que la bascule `StartupApproved` fait bien l'aller-retour.
+
 ## Limites connues
 
 - Windows uniquement, PowerShell 5.1+ (testé sur Windows 11 / PS 5.1).

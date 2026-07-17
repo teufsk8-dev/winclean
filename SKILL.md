@@ -45,6 +45,25 @@ Get-ForgottenFiles -Path $env:USERPROFILE -Months 12 -MinSizeMB 50
 Toutes ces fonctions sont en **lecture seule** — sûres à lancer sans rien demander.
 Puis présente le tableau et laisse l'utilisateur lancer `.\scripts\WinClean.ps1 -Module Nettoyage` pour la partie destructive.
 
+### Les fonctions qui suppriment
+
+Deux fonctions ne demandent **rien** et suppriment pour de bon. Elles supposent que la confirmation a déjà été obtenue par l'appelant — c'est-à-dire par toi :
+
+| Fonction | Effet |
+|---|---|
+| `Remove-CleanupTarget -Target <cible>` | Supprime une cible issue de `Invoke-CleanupScan`. Retourne `{ Nom, Liberes, Restants, Erreur }`. |
+| `Set-StartupState -ApprovedKey <clé> -Name <nom> -Enabled <bool>` | Bascule une entrée de démarrage. Réversible. |
+
+Ne les appelle **jamais** sans que l'utilisateur ait vu les chiffres du scan et dit oui explicitement. En cas de doute, préfère lui faire lancer `-Module Nettoyage`, qui impose la confirmation par construction.
+
+### Tests
+
+```powershell
+.\tests\Test-WinClean.ps1     # 24 assertions, bac a sable temporaire, ne touche aucune donnee reelle
+```
+
+À lancer après toute modification du moteur de suppression. La suite couvre : vidage sans suppression du dossier, suppression filtrée qui épargne le hors-périmètre, résolution des jokers (profils Chrome, avec vérification que `Login Data` survit), fichiers verrouillés, et aller-retour sur `StartupApproved`.
+
 ## Les quatre modules
 
 ### 1. Nettoyage disque

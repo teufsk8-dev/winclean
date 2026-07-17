@@ -1,0 +1,3 @@
+# Journaux de suppression, propres à chaque machine
+logs/
+*.log

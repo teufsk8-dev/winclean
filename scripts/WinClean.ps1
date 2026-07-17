@@ -868,7 +868,9 @@ function Get-InstalledPrograms {
             })
         }
     }
-    return $out | Sort-Object Nom -Unique
+    # Dedoublonnage sur nom + version : les hives HKLM/HKCU peuvent lister le
+    # meme programme, mais deux versions cote a cote sont deux entrees legitimes.
+    return $out | Sort-Object Nom, Version -Unique
 }
 
 function Get-Leftovers {
@@ -1056,6 +1058,7 @@ function Invoke-CleanupAuto {
        construction : personne n'est la pour juger si leur suppression est bonne. #>
 
     Write-Log '--- Debut du nettoyage automatique ---'
+    $libreAvant = (Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -ErrorAction SilentlyContinue).FreeSpace
     $scan = Invoke-CleanupScan
     $safe = @($scan | Where-Object { $_.Niveau -eq 'Sur' -and $_.Octets -gt 0 })
 
@@ -1082,7 +1085,11 @@ function Invoke-CleanupAuto {
         Write-Host ("  {0} : {1} liberes" -f $r.Nom, (Format-Size $r.Liberes))
     }
 
+    $libreApres = (Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -ErrorAction SilentlyContinue).FreeSpace
     Write-Log ("--- Fin : {0} liberes, {1} verrouilles ---" -f (Format-Size $freed), (Format-Size $locked))
+    if ($libreAvant -and $libreApres) {
+        Write-Log ("Espace libre C: : {0} -> {1}" -f (Format-Size $libreAvant), (Format-Size $libreApres))
+    }
     Write-Host ("  Total : {0} liberes" -f (Format-Size $freed))
     if ($locked -gt 0) {
         Write-Host ("  {0} verrouilles (applications ouvertes)" -f (Format-Size $locked))
@@ -1135,7 +1142,6 @@ function Install-WinCleanTask {
 
 function Uninstall-WinCleanTask {
     try {
-        $t = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop
         Unregister-ScheduledTask -TaskName $script:TaskName -Confirm:$false -ErrorAction Stop
         Write-Host ("  Tache '{0}' retiree." -f $script:TaskName) -ForegroundColor Green
         Write-Log 'Tache planifiee retiree'
@@ -1155,6 +1161,12 @@ function Show-Banner {
     Write-Host ""
     Write-Host "  WinClean" -ForegroundColor Cyan -NoNewline
     Write-Host "  -  nettoyage et entretien Windows  ($admin)" -ForegroundColor DarkGray
+    $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue
+    if ($task) {
+        $heure = ''
+        try { $heure = ([datetime]$task.Triggers[0].StartBoundary).ToString('HH:mm') } catch { }
+        Write-Host ("  Nettoyage automatique : actif, tous les jours a {0}  (-RemoveTask pour retirer)" -f $heure) -ForegroundColor DarkGray
+    }
 }
 
 function Show-Menu {
